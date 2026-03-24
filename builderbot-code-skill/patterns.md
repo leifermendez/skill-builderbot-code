@@ -109,11 +109,9 @@ const docFlow = addKeyword<Provider, Database>('doc')
     })
 ```
 
-**ESM circular-import guard** — use `require()` (or dynamic `import()`) inside the callback:
+**ESM circular-import guard** — use dynamic `import()` inside the callback (project is `"type": "module"`, `require` is not available):
 
 ```typescript
-return gotoFlow(require('./register.flow').registerFlow)
-// or
 const { registerFlow } = await import('./register.flow')
 return gotoFlow(registerFlow)
 ```
@@ -154,33 +152,107 @@ const mediaFlow = addKeyword<Provider, Database>('samples')
 
 ---
 
-## Buttons
+## UX Patterns — Conversational Best Practices
+
+### 1. Always tell the user what to type
+
+```typescript
+.addAnswer('What is your email? _(e.g. you@example.com)_', { capture: true }, async (ctx, { fallBack, state }) => {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ctx.body)) {
+        return fallBack('That doesn\'t look right. Please send a valid email (e.g. you@example.com):')
+    }
+    await state.update({ email: ctx.body })
+})
+```
+
+### 2. Cancel / exit at any capture step
+
+```typescript
+.addAnswer('Enter your address _(or type *cancel* to abort)_', { capture: true }, async (ctx, { endFlow, state }) => {
+    if (ctx.body.toLowerCase() === 'cancel') {
+        return endFlow('No problem! Send *menu* whenever you\'re ready.')
+    }
+    await state.update({ address: ctx.body })
+})
+```
+
+### 3. Confirm before committing irreversible actions
+
+```typescript
+.addAction(async (_, { flowDynamic, state }) => {
+    const { product, qty, address } = state.getMyState()
+    await flowDynamic([
+        `*Order summary:*`,
+        `• Product: ${product}`,
+        `• Qty: ${qty}`,
+        `• Ship to: ${address}`,
+        '',
+        'Reply *yes* to confirm or *no* to cancel.',
+    ])
+})
+.addAction({ capture: true }, async (ctx, { gotoFlow, endFlow }) => {
+    if (ctx.body.toLowerCase() === 'yes') return gotoFlow(confirmOrderFlow)
+    return endFlow('Order cancelled. Send *menu* to start over.')
+})
+```
+
+### 4. Break long content into steps (no wall of text)
+
+```typescript
+// Bad — one huge message
+.addAnswer('Here is everything you need to know about our return policy...[300 words]')
+
+// Good — chunk it
+.addAnswer('*Return policy* — 3 key points:')
+.addAnswer('1. Returns accepted within 30 days of delivery.', { delay: 800 })
+.addAnswer('2. Item must be unused and in original packaging.', { delay: 800 })
+.addAnswer('3. Refunds processed in 5–7 business days.', { delay: 800 })
+.addAnswer('Need help with a return? Reply *yes* or *no*.')
+```
+
+### 5. Always close with a clear ending
+
+```typescript
+.addAction(async (ctx, { flowDynamic, endFlow }) => {
+    await flowDynamic(`Done! Your order has been placed. You'll get a confirmation shortly.`)
+    return endFlow()
+})
+```
+
+---
+
+## Buttons — DO NOT USE
+
+`buttons` is unreliable across providers (Baileys, Meta, Telegram, etc.) and must **NOT** be used.
+Use a text-based numbered menu with `capture: true` instead:
 
 ```typescript
 const menuFlow = addKeyword<Provider, Database>('menu')
-    .addAnswer('Select:', {
-        buttons: [
-            { body: 'Option 1' },
-            { body: 'Option 2' },
-        ],
-    })
+    .addAnswer(
+        ['Please choose an option:', '1. Track order', '2. Contact support', '3. FAQ'],
+        { capture: true },
+        async (ctx, { gotoFlow, fallBack }) => {
+            if (ctx.body === '1') return gotoFlow(trackFlow)
+            if (ctx.body === '2') return gotoFlow(supportFlow)
+            if (ctx.body === '3') return gotoFlow(faqFlow)
+            return fallBack('Invalid option. Please reply with 1, 2, or 3.')
+        }
+    )
 ```
 
 ---
 
 ## Idle Timeout
 
-`idle` requires `capture: true`. Check `ctx.idleFallBack` to detect expiry.
+`idle` requires `capture: true`. When the timeout fires the flow expires automatically — do **NOT** check `ctx.idleFallBack`.
 
 ```typescript
 const orderFlow = addKeyword<Provider, Database>('order')
     .addAnswer(
-        'What to order?',
-        { capture: true, idle: 60000 },   // 60 s timeout
-        async (ctx, { endFlow }) => {
-            if (ctx?.idleFallBack) {
-                return endFlow('Session expired due to inactivity.')
-            }
+        'What to order? _(you have 60 s to reply)_',
+        { capture: true, idle: 60000 },   // flow auto-expires after 60 s
+        async (ctx, { state }) => {
+            await state.update({ order: ctx.body })
         }
     )
 ```
@@ -392,52 +464,70 @@ await createBot(
 
 ## Modular Project Structure
 
+> **Important**: BuilderBot projects use `"type": "module"` in `package.json` and `"module": "ES2022"` in tsconfig.
+> **NEVER** use `require()` — it is not available. Use ESM `import` / `export` and dynamic `await import()` for circular cases.
+
+Reference: [BuilderBot — Modularize Flows](https://www.builderbot.app/en/showcases/modularize)
+
+### Recommended layout
+
 ```
-src/
-├── app.ts
-├── provider/index.ts       # export const provider = createProvider(...)
-├── database/index.ts       # export const database = new MongoAdapter(...)
-├── flow/
-│   ├── index.ts            # export const flow = createFlow([...])
-│   ├── welcome.flow.ts
-│   └── register.flow.ts
-└── services/
-    └── ai.ts               # export const ai = new MyAiService()
+my-bot/
+├── src/
+│   ├── app.ts                  # entry — wires provider, database, flow
+│   ├── provider/
+│   │   └── index.ts            # export const provider = createProvider(...)
+│   ├── database/
+│   │   └── index.ts            # export const database = new MongoAdapter(...)
+│   ├── flows/
+│   │   ├── index.ts            # barrel — export const flow = createFlow([...])
+│   │   ├── welcome.flow.ts
+│   │   └── register.flow.ts
+│   └── services/
+│       └── ai.ts               # export const ai = new MyAiService()
+├── assets/
+├── .env
+├── package.json                # "type": "module"
+├── tsconfig.json
+└── rollup.config.js
 ```
 
+### flows/index.ts (barrel file)
+
 ```typescript
-// app.ts
+import { createFlow } from '@builderbot/bot'
+import { welcomeFlow } from './welcome.flow'
+import { registerFlow } from './register.flow'
+
+export const flow = createFlow([welcomeFlow, registerFlow])
+```
+
+### app.ts (entry point)
+
+```typescript
 import { createBot } from '@builderbot/bot'
-import { flow } from './flow'
+import { flow } from './flows'
 import { database } from './database'
 import { provider } from './provider'
 import { ai } from './services/ai'
 
 const main = async () => {
     await createBot({ flow, provider, database }, { extensions: { ai } })
-    provider.initHttpServer(3000)
+    provider.initHttpServer(+(process.env.PORT ?? 3008))
 }
 main()
 ```
 
----
+### Cross-flow navigation (avoiding circular imports)
 
-## Project File Structure
+When flow A navigates to flow B and B also navigates to A, do NOT import both at the top level. Use dynamic `import()` inside the callback:
 
-```
-my-bot/
-├── src/
-│   ├── app.ts
-│   ├── flows/
-│   │   ├── index.ts
-│   │   ├── welcome.flow.ts
-│   │   └── register.flow.ts
-│   └── services/
-├── assets/
-├── .env
-├── package.json        # "type": "module"
-├── tsconfig.json
-└── rollup.config.js
+```typescript
+// welcome.flow.ts
+.addAction(async (ctx, { gotoFlow }) => {
+    const { orderFlow } = await import('./order.flow')
+    return gotoFlow(orderFlow)
+})
 ```
 
 ### tsconfig.json

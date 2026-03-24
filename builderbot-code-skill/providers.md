@@ -269,7 +269,6 @@ type BotContext = {
     host?: { phone: string; [key: string]: any }
     body: string        // message content
     from: string        // sender phone / ID
-    idleFallBack?: boolean  // true when idle timeout fires
     [key: string]: any
 }
 ```
