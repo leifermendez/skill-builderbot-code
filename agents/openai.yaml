@@ -1,0 +1,4 @@
+interface:
+  display_name: BuilderBot Code Skill
+  short_description: Build and debug BuilderBot flows and integrations
+  default_prompt: Help me build or fix a BuilderBot bot with production-ready code.
